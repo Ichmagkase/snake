@@ -21,7 +21,7 @@
 
 #define LOG_SOCKET_NAME "/tmp/snakelog.socket"
 
-#define log_out(logfd, s, ...)                                                 \
+#define log_out(s, ...)                                                        \
   {                                                                            \
     char buffer[1024];                                                         \
     sprintf(buffer, s, ##__VA_ARGS__);                                         \
@@ -33,10 +33,35 @@
     }                                                                          \
   }
 
-// This may be necessary later to track state
-// struct game {
-//   int logstatus;
-// };
+struct snake_tail_segment {
+  int x;
+  int y;
+  struct snake_tail_segment *next_segment;
+};
+
+struct snake_tail {
+  int len;
+  struct snake_tail_segment start_tail_segment;
+};
+
+struct snake_head {
+  int x;
+  int y;
+  struct snake_tail *tail;
+};
+
+struct snake {
+  int dx;
+  int dy;
+  struct snake_head head;
+  struct snake_tail tail;
+};
+
+// this may be necessary later
+struct game {
+  int logstatus;
+  struct snake *snake;
+};
 
 /*
  * Initialize a socket for locking and return the file descriptor
@@ -72,12 +97,15 @@ void handle_interrupt(int signum) {
   exit(EXIT_FAILURE);
 }
 
+int frame_counter = 0;
+
 int main() {
   setlocale(LC_ALL, "");
 
   // setting up timer
   struct timespec rqtp;
-  rqtp.tv_nsec = 5000;
+  rqtp.tv_sec = 0;
+  rqtp.tv_nsec = 100000000;
 
   // init log
   int logfd = init_log();
@@ -92,11 +120,11 @@ int main() {
   // init window
   WINDOW *w = initscr();
   start_color();
+  timeout(0);
 
   refresh();
   int height, width;
-
-  int i = 0;
+  getmaxyx(stdscr, height, width);
 
   sigset_t s;
   sigemptyset(&s);
@@ -104,14 +132,70 @@ int main() {
 
   int status;
 
+  cbreak();
+  noecho();
+  keypad(w, true);
+  curs_set(0);
+
+  // TODO: abstract game logic out of main
+  int snake_x = 0;
+  int snake_y = 0;
+  int snake_dy = 0;
+  int snake_dx = 1;
+  int snake_len = 1;
+  int stage = 0;
+
   for (;;) {
-    sigwait(&s, &status);
-    i++;
-    log_out(logfd, "update %d happened", i);
-    getmaxyx(stdscr, height, width);
-    mvaddch(height / 2, width / 2, 'x');
+    log_out("snake position (x y): %d %d\n", snake_x, snake_y);
+
+    int key = getch();
+    log_out("frame %d: %d acquired, expected %d, %d, %d, %d\n", frame_counter,
+            key, KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT);
+
+    // Get user input
+    switch (key) {
+    case KEY_UP:
+      log_out("frame %d: up was pressed", frame_counter);
+      snake_dx = 0;
+      snake_dy = -1;
+      break;
+    case KEY_DOWN:
+      log_out("frame %d: down was pressed", frame_counter);
+      snake_dx = 0;
+      snake_dy = 1;
+      break;
+    case KEY_LEFT:
+      log_out("frame %d: left was pressed", frame_counter);
+      snake_dx = -1;
+      snake_dy = 0;
+      break;
+    case KEY_RIGHT:
+      snake_dx = 1;
+      snake_dy = 0;
+      log_out("frame %d: right was pressed", frame_counter);
+      break;
+    default:
+      log_out("frame %d: no keys were processed", frame_counter);
+      log_out("frame %d: %d acquired, expected %d, %d, %d, %d\n", frame_counter,
+              key, KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT);
+    }
+
+    // Add current position old snake positions
+
+    // clean up old snake positions
+
+    // Update snake position
+    mvaddch(snake_y, snake_x, '#');
+    snake_y += snake_dy;
+    snake_x += snake_dx;
+
+    // Draw frame
     refresh();
+    frame_counter++;
+
+    nanosleep(&rqtp, NULL);
   }
+  // end todo
 
   endwin();
 }
