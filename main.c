@@ -5,13 +5,13 @@
  *  Initialize the logger and start the main process
  */
 
-#include <bits/sockaddr.h>
 #include <curses.h>
 #include <errno.h>
 #include <locale.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/random.h>
 #include <sys/socket.h>
 #include <sys/types.h>
@@ -21,56 +21,64 @@
 #include <unistd.h>
 
 #define LOG_SOCKET_NAME "/tmp/snakelog.socket"
+#define MAX_LENGTH 255
+#define INIT_LENGTH 50
 
-#define log_out(s, ...)                                                        \
-  {                                                                            \
-    char buffer[1024];                                                         \
-    if (sizeof(s) < 1024)                                                      \
-      sprintf(buffer, s, ##__VA_ARGS__);                                       \
-    else                                                                       \
-      sprintf(buffer, "Invalid log: only supports size up to 1024 bytes");     \
-    if (logfd != -1) {                                                         \
-      ssize_t w = write(logfd, buffer, strlen(buffer) + 1);                    \
-      if (w == -1) {                                                           \
-        fprintf(stderr, "write: %s\n", strerror(errno));                       \
-      }                                                                        \
-    }                                                                          \
+// #define log_out(s, ...) \
+//   { \
+//     char buffer[1024]; \
+//     if (sizeof(s) < 1024) \
+//       sprintf(buffer, s, ##__VA_ARGS__); \
+//     else \
+//       sprintf(buffer, "Invalid log: only supports size up to 1024 bytes"); \
+//     if (logfd != -1) { \
+//       ssize_t w = write(logfd, buffer, strlen(buffer) + 1); \
+//       if (w == -1) { \
+//         fprintf(stderr, "write: %s\n", strerror(errno)); \
+//       } \
+//     } \
+//   }
+
+void log_out(int fd, const char *fmt, ...) {
+  if (fd == -1)
+    return;
+
+  char buffer[1024];
+  va_list ap;
+  va_start(ap, fmt);
+  int n = vsnprintf(buffer, 1024, fmt, ap);
+  va_end(ap);
+
+  if (write(fd, buffer, n) == -1) {
+    fprintf(stderr, "write: %s\n", strerror(errno));
   }
+}
 
-struct food {
+struct snake_segment {
   int x;
   int y;
-};
-
-struct snake_tail_segment {
-  int x;
-  int y;
-  struct snake_tail_segment *next_segment;
-};
-
-struct snake_head {
-  int x;
-  int y;
-  struct snake_tail_segment *next_segment;
 };
 
 struct snake {
   int dx;
   int dy;
-  int length;
-  struct snake_head *head;
+  int head_idx;
+  int tail_idx;
+  struct snake_segment *body;
 };
 
-// this may be necessary later
 struct game {
+  int screen_w;
+  int screen_h;
   int logstatus;
+  char *board;
   struct snake *snake;
 };
 
 /*
  * Initialize a socket for locking and return the file descriptor
  */
-int init_log() {
+int init_logger() {
   int log_socket;
   struct sockaddr_un log;
   int ret;
@@ -96,174 +104,174 @@ int init_log() {
 }
 
 void handle_interrupt(int signum) {
-  // more cleanup to-be-implemented
   endwin();
   exit(EXIT_FAILURE);
 }
 
-// re-build the snake based on its length
-void update_snake(struct snake s) {
-  s.length++;
-  struct snake_tail_segment new_segment;
-  new_segment.next_segment = s.head->next_segment;
-  new_segment.x = s.head->x;
-  new_segment.y = s.head->y;
-  s.head->next_segment = &new_segment;
+void place_food(struct game *game) {
+  int x = drand48() * game->screen_w;
+  int y = drand48() * game->screen_h;
+  game->board[y * game->screen_w + x] = 'a';
+  mvaddch(y, x, 'a');
 }
 
-void respawn_food(struct food food) {
-  food.x = drand48() * 50;
-  food.y = drand48() * 50;
-  mvaddch(food.y, food.x, 'A');
+void cleanup_game(struct game *game) {
+  free(game->board);
+  free(game->snake->body);
+  close(game->logstatus);
 }
 
 int main() {
+  int logfd = init_logger();
+
+  // Curses depends on setting locale
   setlocale(LC_ALL, "");
-  // seed RNG
+
+  // Used for food placement
   int seed;
   getrandom(&seed, sizeof(seed), GRND_RANDOM);
   srand48(seed);
 
-  // setting up timer
-  struct timespec rqtp;
-  rqtp.tv_sec = 0;
-  rqtp.tv_nsec = 30000000;
+  // Used to set game speed
+  struct timespec game_clock;
+  game_clock.tv_sec = 0;
+  game_clock.tv_nsec = 30000000;
 
-  // init log
-  int logfd = init_log();
-
-  // init sigint handler
+  // Clean up properly on SIGINT
   struct sigaction action;
-  action.sa_handler = handle_interrupt;
-  sigemptyset(&action.sa_mask);
-  action.sa_flags = 0;
-  sigaction(SIGINT, &action, NULL);
+  action.sa_handler = handle_interrupt; // set handler function
+  sigemptyset(&action.sa_mask);         // clear signal mask
+  action.sa_flags = 0;                  // no special behavior on interrupt
+  sigaction(SIGINT, &action, NULL);     // handle on SIGINT
 
-  // init window
+  // Set up curses window
   WINDOW *w = initscr();
-  start_color();
-  timeout(0);
+  start_color();   // enable color in the window
+  timeout(0);      // disable blocking on input
+  cbreak();        // read characters immediately
+  noecho();        // do not echo read characters
+  keypad(w, true); // read input as keys instead of ANSI
+                   // escape sequences
+  curs_set(0);     // make cursor invisible
 
-  // refresh();
-  int height, width;
+  // get screen info
+  int height, width, screen_size_ch;
   getmaxyx(stdscr, height, width);
+  screen_size_ch = width * height;
 
-  sigset_t s;
-  sigemptyset(&s);
-  sigaddset(&s, SIGWINCH);
-
-  int status;
-
-  cbreak();
-  noecho();
-  keypad(w, true);
-  curs_set(0);
+  // set initial x, y values for snake
+  int init_x = width / 2;
+  int init_y = height / 2;
 
   // TODO: abstract game logic out of main
-  // TODO: build initial snake based on length instead of manually
 
-  // Set up a new game
-  int x_init = 50;
-  int y_init = 50;
+  struct snake_segment *body =
+      malloc(sizeof(struct snake_segment) * screen_size_ch);
 
-  struct food food;
-  food.x = drand48() * 50;
-  food.y = drand48() * 50;
-
-  struct snake_tail_segment tail_segment;
-  tail_segment.next_segment = NULL;
-  tail_segment.x = x_init - 1;
-  tail_segment.y = y_init;
-
-  struct snake_head head;
-  head.x = x_init;
-  head.y = y_init;
-  head.next_segment = &tail_segment;
+  char *board = malloc(sizeof(char) * screen_size_ch);
+  memset(board, ' ', sizeof(char) * screen_size_ch);
 
   struct snake snake;
   snake.dx = 1;
   snake.dy = 0;
-  snake.length = 1;
-  snake.head = &head;
+  snake.head_idx = 1;
+  snake.tail_idx = 0;
+  snake.body = body;
+
+  // build snake here
+  for (int i = snake.tail_idx; i < snake.head_idx; i++) {
+    snake.body[i].x = init_x - i;
+    snake.body[i].y = init_y;
+    board[init_y * width + init_x] = 's';
+    mvaddch(init_x - i, init_y, '#');
+  }
 
   struct game game;
+  game.screen_h = height;
+  game.screen_w = width;
   game.snake = &snake;
+  game.board = board;
   game.logstatus = logfd;
 
-  log_out("food (x, y): %d %d\n", food.x, food.y);
-  mvaddch(food.y, food.x, 'A');
+  place_food(&game);
 
-  // start the game loop
+  refresh();
+
+  // Get user input
   for (;;) {
-    // Get user input
+
     int key = getch();
     switch (key) {
     case KEY_UP:
+      if (snake.dy == 1)
+        break;
       snake.dx = 0;
       snake.dy = -1;
       break;
     case KEY_DOWN:
+      if (snake.dy == -1)
+        break;
       snake.dx = 0;
       snake.dy = 1;
       break;
     case KEY_LEFT:
+      if (snake.dx == 1)
+        break;
       snake.dx = -1;
       snake.dy = 0;
       break;
     case KEY_RIGHT:
+      if (snake.dx == -1)
+        break;
       snake.dx = 1;
       snake.dy = 0;
       break;
     }
 
-    // find last node
-    struct snake_tail_segment *segment = snake.head->next_segment;
+    // update head
+    int next_x = (snake.body[snake.head_idx].x + snake.dx + width) % width;
+    int next_y = (snake.body[snake.head_idx].y + snake.dy + height) % height;
 
-    if (segment->next_segment != NULL) {
-      while (segment->next_segment->next_segment != NULL) {
-        log_out("segment found");
-        segment = segment->next_segment;
-      }
+    snake.head_idx = (snake.head_idx + 1) % MAX_LENGTH;
+
+    snake.body[snake.head_idx].x = next_x;
+    snake.body[snake.head_idx].y = next_y;
+
+    // check collisions
+    int tail_x;
+    int tail_y;
+    switch (board[next_y * width + next_x]) {
+    case 's':
+      goto GAMEOVER;
+
+    case 'a':
+      tail_x = snake.body[snake.tail_idx].x;
+      tail_y = snake.body[snake.tail_idx].y;
+      place_food(&game);
+      break;
+
+    default:
+      // update tail
+      tail_x = snake.body[snake.tail_idx].x;
+      tail_y = snake.body[snake.tail_idx].y;
+      mvaddch(tail_y, tail_x, ' ');
+      snake.tail_idx = (snake.tail_idx + 1) % MAX_LENGTH;
     }
 
-    // create the new tail segment
-    struct snake_tail_segment new_segment;
-    new_segment.x = snake.head->x;
-    new_segment.y = snake.head->y;
-
-    if (snake.length == 1) {
-      mvaddch(segment->y, segment->x, ' ');
-      new_segment.next_segment = NULL;
-    } else {
-      mvaddch(segment->next_segment->y, segment->next_segment->x, ' ');
-      new_segment.next_segment = snake.head->next_segment;
-    }
-
-    snake.head->y += snake.dy;
-    snake.head->x += snake.dx;
-    snake.head->next_segment = &new_segment;
+    // update board
+    board[tail_y * width + tail_x] = ' ';
+    board[next_y * width + next_x] = 's';
 
     // draw snake
-    mvaddch(snake.head->y, snake.head->x, '#');
+    mvaddch(snake.body[snake.head_idx].y, snake.body[snake.head_idx].x, '#');
 
-    // check food collision
-    if (snake.head->x == food.x && snake.head->y == food.y) {
-      snake.length++;
-      struct snake_tail_segment new_segment;
-      new_segment.next_segment = snake.head->next_segment;
-      new_segment.x = snake.head->x;
-      new_segment.y = snake.head->y;
-      snake.head->next_segment = &new_segment;
-
-      respawn_food(food);
-    }
-
-    // draw frame
     refresh();
 
-    nanosleep(&rqtp, NULL);
+    nanosleep(&game_clock, NULL);
   }
-  // end todo
 
+GAMEOVER:
+  cleanup_game(&game);
   endwin();
+  exit(EXIT_SUCCESS);
 }
