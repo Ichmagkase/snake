@@ -12,6 +12,7 @@
 #include <signal.h>
 #include <stdarg.h>
 #include <stdlib.h>
+#include <sys/random.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <sys/un.h>
@@ -24,7 +25,10 @@
 #define log_out(s, ...)                                                        \
   {                                                                            \
     char buffer[1024];                                                         \
-    sprintf(buffer, s, ##__VA_ARGS__);                                         \
+    if (sizeof(s) < 1024)                                                      \
+      sprintf(buffer, s, ##__VA_ARGS__);                                       \
+    else                                                                       \
+      sprintf(buffer, "Invalid log: only supports size up to 1024 bytes");     \
     if (logfd != -1) {                                                         \
       ssize_t w = write(logfd, buffer, strlen(buffer) + 1);                    \
       if (w == -1) {                                                           \
@@ -33,28 +37,28 @@
     }                                                                          \
   }
 
+struct food {
+  int x;
+  int y;
+};
+
 struct snake_tail_segment {
   int x;
   int y;
   struct snake_tail_segment *next_segment;
 };
 
-struct snake_tail {
-  int len;
-  struct snake_tail_segment start_tail_segment;
-};
-
 struct snake_head {
   int x;
   int y;
-  struct snake_tail *tail;
+  struct snake_tail_segment *next_segment;
 };
 
 struct snake {
   int dx;
   int dy;
-  struct snake_head head;
-  struct snake_tail tail;
+  int length;
+  struct snake_head *head;
 };
 
 // this may be necessary later
@@ -97,15 +101,33 @@ void handle_interrupt(int signum) {
   exit(EXIT_FAILURE);
 }
 
-int frame_counter = 0;
+// re-build the snake based on its length
+void update_snake(struct snake s) {
+  s.length++;
+  struct snake_tail_segment new_segment;
+  new_segment.next_segment = s.head->next_segment;
+  new_segment.x = s.head->x;
+  new_segment.y = s.head->y;
+  s.head->next_segment = &new_segment;
+}
+
+void respawn_food(struct food food) {
+  food.x = drand48() * 50;
+  food.y = drand48() * 50;
+  mvaddch(food.y, food.x, 'A');
+}
 
 int main() {
   setlocale(LC_ALL, "");
+  // seed RNG
+  int seed;
+  getrandom(&seed, sizeof(seed), GRND_RANDOM);
+  srand48(seed);
 
   // setting up timer
   struct timespec rqtp;
   rqtp.tv_sec = 0;
-  rqtp.tv_nsec = 100000000;
+  rqtp.tv_nsec = 30000000;
 
   // init log
   int logfd = init_log();
@@ -122,7 +144,7 @@ int main() {
   start_color();
   timeout(0);
 
-  refresh();
+  // refresh();
   int height, width;
   getmaxyx(stdscr, height, width);
 
@@ -138,60 +160,106 @@ int main() {
   curs_set(0);
 
   // TODO: abstract game logic out of main
-  int snake_x = 0;
-  int snake_y = 0;
-  int snake_dy = 0;
-  int snake_dx = 1;
-  int snake_len = 1;
-  int stage = 0;
+  // TODO: build initial snake based on length instead of manually
 
+  // Set up a new game
+  int x_init = 50;
+  int y_init = 50;
+
+  struct food food;
+  food.x = drand48() * 50;
+  food.y = drand48() * 50;
+
+  struct snake_tail_segment tail_segment;
+  tail_segment.next_segment = NULL;
+  tail_segment.x = x_init - 1;
+  tail_segment.y = y_init;
+
+  struct snake_head head;
+  head.x = x_init;
+  head.y = y_init;
+  head.next_segment = &tail_segment;
+
+  struct snake snake;
+  snake.dx = 1;
+  snake.dy = 0;
+  snake.length = 1;
+  snake.head = &head;
+
+  struct game game;
+  game.snake = &snake;
+  game.logstatus = logfd;
+
+  log_out("food (x, y): %d %d\n", food.x, food.y);
+  mvaddch(food.y, food.x, 'A');
+
+  // start the game loop
   for (;;) {
-    log_out("snake position (x y): %d %d\n", snake_x, snake_y);
-
-    int key = getch();
-    log_out("frame %d: %d acquired, expected %d, %d, %d, %d\n", frame_counter,
-            key, KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT);
-
     // Get user input
+    int key = getch();
     switch (key) {
     case KEY_UP:
-      log_out("frame %d: up was pressed", frame_counter);
-      snake_dx = 0;
-      snake_dy = -1;
+      snake.dx = 0;
+      snake.dy = -1;
       break;
     case KEY_DOWN:
-      log_out("frame %d: down was pressed", frame_counter);
-      snake_dx = 0;
-      snake_dy = 1;
+      snake.dx = 0;
+      snake.dy = 1;
       break;
     case KEY_LEFT:
-      log_out("frame %d: left was pressed", frame_counter);
-      snake_dx = -1;
-      snake_dy = 0;
+      snake.dx = -1;
+      snake.dy = 0;
       break;
     case KEY_RIGHT:
-      snake_dx = 1;
-      snake_dy = 0;
-      log_out("frame %d: right was pressed", frame_counter);
+      snake.dx = 1;
+      snake.dy = 0;
       break;
-    default:
-      log_out("frame %d: no keys were processed", frame_counter);
-      log_out("frame %d: %d acquired, expected %d, %d, %d, %d\n", frame_counter,
-              key, KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT);
     }
 
-    // Add current position old snake positions
+    // find last node
+    struct snake_tail_segment *segment = snake.head->next_segment;
 
-    // clean up old snake positions
+    if (segment->next_segment != NULL) {
+      while (segment->next_segment->next_segment != NULL) {
+        log_out("segment found");
+        segment = segment->next_segment;
+      }
+    }
 
-    // Update snake position
-    mvaddch(snake_y, snake_x, '#');
-    snake_y += snake_dy;
-    snake_x += snake_dx;
+    // create the new tail segment
+    struct snake_tail_segment new_segment;
+    new_segment.x = snake.head->x;
+    new_segment.y = snake.head->y;
 
-    // Draw frame
+    if (snake.length == 1) {
+      mvaddch(segment->y, segment->x, ' ');
+      new_segment.next_segment = NULL;
+    } else {
+      mvaddch(segment->next_segment->y, segment->next_segment->x, ' ');
+      new_segment.next_segment = snake.head->next_segment;
+    }
+
+    snake.head->y += snake.dy;
+    snake.head->x += snake.dx;
+    snake.head->next_segment = &new_segment;
+
+    // draw snake
+    mvaddch(snake.head->y, snake.head->x, '#');
+
+    // check food collision
+    if (snake.head->x == food.x && snake.head->y == food.y) {
+      snake.length++;
+      struct snake_tail_segment new_segment;
+      new_segment.next_segment = snake.head->next_segment;
+      new_segment.x = snake.head->x;
+      new_segment.y = snake.head->y;
+      snake.head->next_segment = &new_segment;
+
+      respawn_food(food);
+    }
+
+    // draw frame
     refresh();
-    frame_counter++;
 
     nanosleep(&rqtp, NULL);
   }
