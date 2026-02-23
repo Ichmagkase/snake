@@ -2,7 +2,7 @@
  * File: main.c
  * Author: Zackery Drake
  * Description:
- *  Initialize the logger and start the main process
+ *  TUI snake game using Curses. Supports IPC logging using Unix domain sockets.
  */
 
 #include <curses.h>
@@ -24,21 +24,56 @@
 #define MAX_LENGTH 255
 #define INIT_LENGTH 50
 
-// #define log_out(s, ...) \
-//   { \
-//     char buffer[1024]; \
-//     if (sizeof(s) < 1024) \
-//       sprintf(buffer, s, ##__VA_ARGS__); \
-//     else \
-//       sprintf(buffer, "Invalid log: only supports size up to 1024 bytes"); \
-//     if (logfd != -1) { \
-//       ssize_t w = write(logfd, buffer, strlen(buffer) + 1); \
-//       if (w == -1) { \
-//         fprintf(stderr, "write: %s\n", strerror(errno)); \
-//       } \
-//     } \
-//   }
+/**
+ * struct snake_segment - a snake segment stored in the struct snake body array
+ * @x: x coordinate on screen
+ * @y: y coordinate on screen
+ */
+struct snake_segment {
+  int x;
+  int y;
+};
 
+/**
+ * struct snake - snake data structure incluing its heading direction
+ * @dx: change in x position per update
+ * @dy: change in y position per update
+ * @head_idx: body index that refers to snake's head
+ * @head_idx: body index that refers to snake's tail
+ * @body: circular array of snake's segments
+ */
+struct snake {
+  int dx;
+  int dy;
+  int head_idx;
+  int tail_idx;
+  struct snake_segment *body;
+};
+
+/**
+ * struct game - game metadata and data structures
+ * @screen_w: screen width
+ * @screen_h: screen height
+ * @logfd: file descriptor for logging
+ * @board: array representation of game board for use in collision checking
+ * @snake: snake
+ * @clock: sleep time between frames
+ */
+struct game {
+  int screen_w;
+  int screen_h;
+  int logfd;
+  char *board;
+  struct snake *snake;
+  struct timespec clock;
+};
+
+/**
+ * log_out - Log formatted message out socket fd
+ * @fd: socket to send logs out
+ * @fmt: formatted string to send to logger
+ * @...: arguments for the format string
+ */
 void log_out(int fd, const char *fmt, ...) {
   if (fd == -1)
     return;
@@ -54,29 +89,10 @@ void log_out(int fd, const char *fmt, ...) {
   }
 }
 
-struct snake_segment {
-  int x;
-  int y;
-};
-
-struct snake {
-  int dx;
-  int dy;
-  int head_idx;
-  int tail_idx;
-  struct snake_segment *body;
-};
-
-struct game {
-  int screen_w;
-  int screen_h;
-  int logstatus;
-  char *board;
-  struct snake *snake;
-};
-
-/*
- * Initialize a socket for locking and return the file descriptor
+/**
+ * init_logger - Initialize a socket for locking and return the file descriptor
+ *
+ * @return a file descriptor for the logger socket
  */
 int init_logger() {
   int log_socket;
@@ -103,11 +119,10 @@ int init_logger() {
   return log_socket;
 }
 
-void handle_interrupt(int signum) {
-  endwin();
-  exit(EXIT_FAILURE);
-}
-
+/**
+ * place_food - Place food at a random position on the screen
+ * @game: the game to place food on
+ */
 void place_food(struct game *game) {
   int x = drand48() * game->screen_w;
   int y = drand48() * game->screen_h;
@@ -115,36 +130,23 @@ void place_food(struct game *game) {
   mvaddch(y, x, 'a');
 }
 
+/**
+ * cleanup_game - Free heap-allocated structures and close log fd
+ * @game: the game to free
+ */
 void cleanup_game(struct game *game) {
   free(game->board);
   free(game->snake->body);
-  close(game->logstatus);
+  close(game->logfd);
 }
 
-int main() {
-  int logfd = init_logger();
-
-  // Curses depends on setting locale
+/**
+ * init_screen - Initialize curses primatives and return curses window
+ *
+ * @return curses window
+ */
+WINDOW *init_screen() {
   setlocale(LC_ALL, "");
-
-  // Used for food placement
-  int seed;
-  getrandom(&seed, sizeof(seed), GRND_RANDOM);
-  srand48(seed);
-
-  // Used to set game speed
-  struct timespec game_clock;
-  game_clock.tv_sec = 0;
-  game_clock.tv_nsec = 30000000;
-
-  // Clean up properly on SIGINT
-  struct sigaction action;
-  action.sa_handler = handle_interrupt; // set handler function
-  sigemptyset(&action.sa_mask);         // clear signal mask
-  action.sa_flags = 0;                  // no special behavior on interrupt
-  sigaction(SIGINT, &action, NULL);     // handle on SIGINT
-
-  // Set up curses window
   WINDOW *w = initscr();
   start_color();   // enable color in the window
   timeout(0);      // disable blocking on input
@@ -153,6 +155,16 @@ int main() {
   keypad(w, true); // read input as keys instead of ANSI
                    // escape sequences
   curs_set(0);     // make cursor invisible
+
+  return w;
+}
+
+/**
+ * init_game - populate game struct with initial data structures
+ * @game: reference to game struct to initialize
+ */
+void init_game(struct game *game) {
+  int logfd = init_logger();
 
   // get screen info
   int height, width, screen_size_ch;
@@ -163,115 +175,178 @@ int main() {
   int init_x = width / 2;
   int init_y = height / 2;
 
-  // TODO: abstract game logic out of main
-
   struct snake_segment *body =
       malloc(sizeof(struct snake_segment) * screen_size_ch);
 
   char *board = malloc(sizeof(char) * screen_size_ch);
   memset(board, ' ', sizeof(char) * screen_size_ch);
 
-  struct snake snake;
-  snake.dx = 1;
-  snake.dy = 0;
-  snake.head_idx = 1;
-  snake.tail_idx = 0;
-  snake.body = body;
+  // initialize the snake
+  struct snake *snake = malloc(sizeof(struct snake));
+  snake->dx = 1;
+  snake->dy = 0;
+  snake->head_idx = 1;
+  snake->tail_idx = 0;
+  snake->body = body;
 
-  // build snake here
-  for (int i = snake.tail_idx; i < snake.head_idx; i++) {
-    snake.body[i].x = init_x - i;
-    snake.body[i].y = init_y;
+  // populate snake body array and board
+  for (int i = snake->tail_idx; i < snake->head_idx; i++) {
+    snake->body[i].x = init_x - i;
+    snake->body[i].y = init_y;
     board[init_y * width + init_x] = 's';
     mvaddch(init_x - i, init_y, '#');
   }
 
-  struct game game;
-  game.screen_h = height;
-  game.screen_w = width;
-  game.snake = &snake;
-  game.board = board;
-  game.logstatus = logfd;
+  // populate game struct
+  game->screen_h = height;
+  game->screen_w = width;
+  game->snake = snake;
+  game->board = board;
+  game->logfd = logfd;
+  game->clock.tv_sec = 0;
+  game->clock.tv_nsec = 30000000;
 
-  place_food(&game);
+  place_food(game);
 
   refresh();
+}
 
-  // Get user input
-  for (;;) {
+/**
+ * init_rng - apply seed for use by drand48
+ */
+void init_rng() {
+  int seed;
+  getrandom(&seed, sizeof(seed), GRND_RANDOM);
+  srand48(seed);
+}
 
-    int key = getch();
-    switch (key) {
-    case KEY_UP:
-      if (snake.dy == 1)
-        break;
-      snake.dx = 0;
-      snake.dy = -1;
+/**
+ * handle_interrupt - Interrupt handler for SIGINT
+ * @signum: signal number
+ */
+void handle_interrupt(int signum) {
+  endwin();
+  exit(EXIT_FAILURE);
+}
+
+/**
+ * init_signal_handlers - configure signal handlers for SIGINT
+ */
+void init_signal_handlers() {
+  struct sigaction action;
+  action.sa_handler = handle_interrupt; // set handler function
+  sigemptyset(&action.sa_mask);         // clear signal mask
+  action.sa_flags = 0;                  // no special behavior on interrupt
+  sigaction(SIGINT, &action, NULL);     // handle on SIGINT
+}
+
+/**
+ * handle_user_input - check for user update and update snake's direction
+ * @snake - snake to update
+ */
+void handle_user_input(struct snake *snake) {
+  int key = getch();
+  switch (key) {
+  case KEY_UP:
+    if (snake->dy == 1)
       break;
-    case KEY_DOWN:
-      if (snake.dy == -1)
-        break;
-      snake.dx = 0;
-      snake.dy = 1;
+    snake->dx = 0;
+    snake->dy = -1;
+    break;
+  case KEY_DOWN:
+    if (snake->dy == -1)
       break;
-    case KEY_LEFT:
-      if (snake.dx == 1)
-        break;
-      snake.dx = -1;
-      snake.dy = 0;
+    snake->dx = 0;
+    snake->dy = 1;
+    break;
+  case KEY_LEFT:
+    if (snake->dx == 1)
       break;
-    case KEY_RIGHT:
-      if (snake.dx == -1)
-        break;
-      snake.dx = 1;
-      snake.dy = 0;
+    snake->dx = -1;
+    snake->dy = 0;
+    break;
+  case KEY_RIGHT:
+    if (snake->dx == -1)
       break;
-    }
+    snake->dx = 1;
+    snake->dy = 0;
+    break;
+  }
+}
 
-    // update head
-    int next_x = (snake.body[snake.head_idx].x + snake.dx + width) % width;
-    int next_y = (snake.body[snake.head_idx].y + snake.dy + height) % height;
+/**
+ * update_state - update snake position, board, and redraw screen according to
+ * game state
+ * @game - game to update
+ *
+ * Per update, update_state updates the snake's position by treating the snake
+ * body as a circular array, moving the head back to the beginning if it goes
+ * out of bounds, etc. Checks for head collisions by comparing new head position
+ * to the index of the board represented by that position.
+ *
+ * @return true/false for alive/dead respectively
+ */
+bool update_state(struct game *game) {
+  struct snake *snake = game->snake;
 
-    snake.head_idx = (snake.head_idx + 1) % MAX_LENGTH;
+  // move snake head
+  int next_x = (snake->body[snake->head_idx].x + snake->dx + game->screen_w) %
+               game->screen_w;
+  int next_y = (snake->body[snake->head_idx].y + snake->dy + game->screen_h) %
+               game->screen_h;
 
-    snake.body[snake.head_idx].x = next_x;
-    snake.body[snake.head_idx].y = next_y;
+  snake->head_idx = (snake->head_idx + 1) % MAX_LENGTH;
+  snake->body[snake->head_idx].x = next_x;
+  snake->body[snake->head_idx].y = next_y;
 
-    // check collisions
-    int tail_x;
-    int tail_y;
-    switch (board[next_y * width + next_x]) {
-    case 's':
-      goto GAMEOVER;
+  // check collisions
+  int tail_x;
+  int tail_y;
+  switch (game->board[next_y * game->screen_w + next_x]) {
+  case 's':
+    return false;
 
-    case 'a':
-      tail_x = snake.body[snake.tail_idx].x;
-      tail_y = snake.body[snake.tail_idx].y;
-      place_food(&game);
-      break;
+  case 'a':
+    log_out(game->logfd, "Apple eaten! New length: %d\n",
+            snake->head_idx - snake->tail_idx);
+    tail_x = snake->body[snake->tail_idx].x;
+    tail_y = snake->body[snake->tail_idx].y;
+    place_food(game);
+    break;
 
-    default:
-      // update tail
-      tail_x = snake.body[snake.tail_idx].x;
-      tail_y = snake.body[snake.tail_idx].y;
-      mvaddch(tail_y, tail_x, ' ');
-      snake.tail_idx = (snake.tail_idx + 1) % MAX_LENGTH;
-    }
-
-    // update board
-    board[tail_y * width + tail_x] = ' ';
-    board[next_y * width + next_x] = 's';
-
-    // draw snake
-    mvaddch(snake.body[snake.head_idx].y, snake.body[snake.head_idx].x, '#');
-
-    refresh();
-
-    nanosleep(&game_clock, NULL);
+  default:
+    // update tail
+    tail_x = snake->body[snake->tail_idx].x;
+    tail_y = snake->body[snake->tail_idx].y;
+    mvaddch(tail_y, tail_x, ' ');
+    snake->tail_idx = (snake->tail_idx + 1) % MAX_LENGTH;
   }
 
-GAMEOVER:
+  // update board
+  game->board[tail_y * game->screen_w + tail_x] = ' ';
+  game->board[next_y * game->screen_w + next_x] = 's';
+
+  // draw snake
+  mvaddch(snake->body[snake->head_idx].y, snake->body[snake->head_idx].x, '#');
+  return true;
+}
+
+int main() {
+  WINDOW *w = init_screen();
+  init_rng();
+
+  struct game game;
+  init_game(&game);
+
+  bool alive = true;
+
+  while (alive) {
+    handle_user_input(game.snake);
+    alive = update_state(&game);
+    refresh();
+    nanosleep(&game.clock, NULL);
+  }
+
   cleanup_game(&game);
   endwin();
-  exit(EXIT_SUCCESS);
 }
