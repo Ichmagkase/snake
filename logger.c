@@ -41,6 +41,7 @@ int main(void) {
     exit(EXIT_FAILURE);
   }
 
+  printf("Logger started\n");
   for (;;) {
     r = read(data_socket, buffer, sizeof(buffer));
     if (r == -1) {

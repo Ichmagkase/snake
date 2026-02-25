@@ -5,6 +5,7 @@
  *  TUI snake game using Curses. Supports IPC logging using Unix domain sockets.
  */
 
+#include <bits/time.h>
 #include <curses.h>
 #include <errno.h>
 #include <locale.h>
@@ -23,6 +24,14 @@
 #define LOG_SOCKET_NAME "/tmp/snakelog.socket"
 #define MAX_LENGTH 255
 #define INIT_LENGTH 50
+
+#define SPEED_SUPER_FAST 100
+#define SPEED_FAST 50
+#define SPEED_DEFAULT 25
+#define SPEED_SLOW 15
+#define SPEED_SUPER_SLOW 2
+
+#define ALLOWED_FLAGS "fsFS"
 
 /**
  * struct snake_segment - a snake segment stored in the struct snake body array
@@ -62,10 +71,11 @@ struct snake {
 struct game {
   int screen_w;
   int screen_h;
+  int speed;
   int logfd;
   char *board;
   struct snake *snake;
-  struct timespec clock;
+  struct timespec tick;
 };
 
 /**
@@ -200,11 +210,12 @@ void init_game(struct game *game) {
   // populate game struct
   game->screen_h = height;
   game->screen_w = width;
+  game->speed = SPEED_DEFAULT;
   game->snake = snake;
   game->board = board;
   game->logfd = logfd;
-  game->clock.tv_sec = 0;
-  game->clock.tv_nsec = 30000000;
+
+  clock_gettime(CLOCK_MONOTONIC, &game->tick);
 
   place_food(game);
 
@@ -242,34 +253,38 @@ void init_signal_handlers() {
 
 /**
  * handle_user_input - check for user update and update snake's direction
- * @snake - snake to update
+ * @game- game to update
  */
-void handle_user_input(struct snake *snake) {
+void handle_user_input(struct game *game) {
   int key = getch();
   switch (key) {
   case KEY_UP:
-    if (snake->dy == 1)
+    if (game->snake->dy != 0)
       break;
-    snake->dx = 0;
-    snake->dy = -1;
+    game->snake->dx = 0;
+    game->snake->dy = -1;
+    log_out(game->logfd, "changed heading N\n");
     break;
   case KEY_DOWN:
-    if (snake->dy == -1)
+    if (game->snake->dy != 0)
       break;
-    snake->dx = 0;
-    snake->dy = 1;
+    game->snake->dx = 0;
+    game->snake->dy = 1;
+    log_out(game->logfd, "changed heading S\n");
     break;
   case KEY_LEFT:
-    if (snake->dx == 1)
+    if (game->snake->dx != 0)
       break;
-    snake->dx = -1;
-    snake->dy = 0;
+    game->snake->dx = -1;
+    game->snake->dy = 0;
+    log_out(game->logfd, "changed heading W\n");
     break;
   case KEY_RIGHT:
-    if (snake->dx == -1)
+    if (game->snake->dx != 0)
       break;
-    snake->dx = 1;
-    snake->dy = 0;
+    game->snake->dx = 1;
+    game->snake->dy = 0;
+    log_out(game->logfd, "changed heading E\n");
     break;
   }
 }
@@ -331,20 +346,82 @@ bool update_state(struct game *game) {
   return true;
 }
 
-int main() {
+void apply_options(struct game *game, int argc, char *argv[]) {
+  int opt;
+  while ((opt = getopt(argc, argv, ALLOWED_FLAGS)) != -1) {
+    switch (opt) {
+    case 's':
+      game->speed = SPEED_SLOW;
+      log_out(game->logfd, "Applied option: slow\n");
+      return;
+    case 'f':
+      game->speed = SPEED_FAST;
+      log_out(game->logfd, "Applied option: fast\n");
+      return;
+    case 'F':
+      game->speed = SPEED_SUPER_FAST;
+      log_out(game->logfd, "Applied option: super fast\n");
+      return;
+    case 'S':
+      game->speed = SPEED_SUPER_SLOW;
+      log_out(game->logfd, "Applied option: super slow\n");
+      return;
+    default:
+      log_out(game->logfd, "Usage: %s [ -%s ]\n", argv[0], ALLOWED_FLAGS);
+      fprintf(stderr, "Usage: %s [ -%s ]\n", argv[0], ALLOWED_FLAGS);
+      cleanup_game(game);
+      endwin();
+      exit(EXIT_FAILURE);
+    }
+  }
+}
+
+bool clock_tick(struct game *game) {
+  struct timespec target;
+  target.tv_sec = 0;
+  if (game->snake->dy != 0) {
+    target.tv_nsec = 1000000000L / game->speed;
+  } else {
+    target.tv_nsec = 1000000000L / game->speed;
+  }
+
+  struct timespec current;
+  clock_gettime(CLOCK_MONOTONIC, &current);
+
+  struct timespec elapsed;
+  elapsed.tv_sec = current.tv_sec - game->tick.tv_sec;
+  elapsed.tv_nsec = current.tv_nsec - game->tick.tv_nsec;
+
+  // carry a second
+  if (elapsed.tv_nsec < 0) {
+    elapsed.tv_sec -= 1;
+    elapsed.tv_nsec += 1000000000L;
+  }
+
+  if (elapsed.tv_nsec > target.tv_nsec || elapsed.tv_nsec >= target.tv_nsec) {
+    game->tick = current;
+    return true;
+  } else {
+    return false;
+  }
+}
+
+int main(int argc, char *argv[]) {
   WINDOW *w = init_screen();
   init_rng();
 
   struct game game;
   init_game(&game);
+  apply_options(&game, argc, argv);
 
   bool alive = true;
 
   while (alive) {
-    handle_user_input(game.snake);
-    alive = update_state(&game);
-    refresh();
-    nanosleep(&game.clock, NULL);
+    if (clock_tick(&game)) {
+      handle_user_input(&game);
+      alive = update_state(&game);
+      refresh();
+    }
   }
 
   cleanup_game(&game);
