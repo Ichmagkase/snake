@@ -17,6 +17,15 @@ The snake (represented as #'s) must eat as many apples (represented as a's) as
 possible without running into itself. This iteration of the game also supports
 wrapping around the screen, so the only way to die is by running into your own tail.
 
+Choose from 4 different speed options:
+
+```bash
+./bin/snake -s: slow
+./bin/snake -f: fast
+./bin/snake -S: super slow
+./bin/snake -F: super fast
+```
+
 ## Building
 
 To run the game alone run:
