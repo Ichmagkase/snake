@@ -136,6 +136,10 @@ int init_logger() {
 void place_food(struct game *game) {
   int x = drand48() * game->screen_w;
   int y = drand48() * game->screen_h;
+  while (game->board[y * game->screen_w + x] != ' ') {
+    x = drand48() * game->screen_w;
+    y = drand48() * game->screen_h;
+  }
   game->board[y * game->screen_w + x] = 'a';
   mvaddch(y, x, 'a');
 }
