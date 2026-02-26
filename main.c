@@ -346,6 +346,12 @@ bool update_state(struct game *game) {
   return true;
 }
 
+/**
+ * apply_options - apply command line options to the game
+ * @game: game to apply optiosn to
+ * @argc: arg count
+ * @argv: array of arguments
+ */
 void apply_options(struct game *game, int argc, char *argv[]) {
   int opt;
   while ((opt = getopt(argc, argv, ALLOWED_FLAGS)) != -1) {
@@ -376,6 +382,10 @@ void apply_options(struct game *game, int argc, char *argv[]) {
   }
 }
 
+/**
+ * clock_tick - check if updates are due and apply
+ * @game: game for which to check updates
+ */
 bool clock_tick(struct game *game) {
   struct timespec target;
   target.tv_sec = 0;
