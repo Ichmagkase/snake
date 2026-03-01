@@ -22,8 +22,11 @@
 #include <unistd.h>
 
 #define LOG_SOCKET_NAME "/tmp/snakelog.socket"
-#define MAX_LENGTH 255
-#define INIT_LENGTH 50
+
+// unused defines
+// #define MAX_LENGTH 255
+
+#define START_LENGTH 3
 
 #define SPEED_SUPER_FAST 100
 #define SPEED_FAST 50
@@ -31,7 +34,7 @@
 #define SPEED_SLOW 15
 #define SPEED_SUPER_SLOW 2
 
-#define ALLOWED_FLAGS "fsFS"
+#define ALLOWED_FLAGS "fsFSl:c:h"
 
 /**
  * struct snake_segment - a snake segment stored in the struct snake body array
@@ -199,7 +202,7 @@ void init_game(struct game *game) {
   struct snake *snake = malloc(sizeof(struct snake));
   snake->dx = 1;
   snake->dy = 0;
-  snake->head_idx = 1;
+  snake->head_idx = START_LENGTH;
   snake->tail_idx = 0;
   snake->body = body;
 
@@ -358,6 +361,7 @@ bool update_state(struct game *game) {
  */
 void apply_options(struct game *game, int argc, char *argv[]) {
   int opt;
+  int custom_speed;
   while ((opt = getopt(argc, argv, ALLOWED_FLAGS)) != -1) {
     switch (opt) {
     case 's':
@@ -376,11 +380,24 @@ void apply_options(struct game *game, int argc, char *argv[]) {
       game->speed = SPEED_SUPER_SLOW;
       log_out(game->logfd, "Applied option: super slow\n");
       return;
+    case 'c':
+      custom_speed = atoi(optarg);
+      if (custom_speed <= 1) {
+        cleanup_game(game);
+        endwin();
+        fprintf(stderr, "Speed must be >= 2\n");
+        fflush(stderr);
+        exit(EXIT_FAILURE);
+      }
+
+      game->speed = custom_speed;
+      log_out(game->logfd, "Applied option: custom speed\n");
+      return;
     default:
       log_out(game->logfd, "Usage: %s [ -%s ]\n", argv[0], ALLOWED_FLAGS);
-      fprintf(stderr, "Usage: %s [ -%s ]\n", argv[0], ALLOWED_FLAGS);
       cleanup_game(game);
       endwin();
+      fprintf(stderr, "Usage: %s [ -%s ]\n", argv[0], ALLOWED_FLAGS);
       exit(EXIT_FAILURE);
     }
   }
