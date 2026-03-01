@@ -204,11 +204,11 @@ void init_game(struct game *game) {
   snake->body = body;
 
   // populate snake body array and board
-  for (int i = snake->tail_idx; i < snake->head_idx; i++) {
-    snake->body[i].x = init_x - i;
+  for (int i = snake->tail_idx; i < snake->head_idx + 1; i++) {
+    snake->body[i].x = init_x + i;
     snake->body[i].y = init_y;
     board[init_y * width + init_x] = 's';
-    mvaddch(init_x - i, init_y, '#');
+    mvaddch(init_y, init_x - i, '#');
   }
 
   // populate game struct
@@ -314,7 +314,7 @@ bool update_state(struct game *game) {
   int next_y = (snake->body[snake->head_idx].y + snake->dy + game->screen_h) %
                game->screen_h;
 
-  snake->head_idx = (snake->head_idx + 1) % MAX_LENGTH;
+  snake->head_idx = (snake->head_idx + 1) % (game->screen_w * game->screen_h);
   snake->body[snake->head_idx].x = next_x;
   snake->body[snake->head_idx].y = next_y;
 
@@ -338,7 +338,7 @@ bool update_state(struct game *game) {
     tail_x = snake->body[snake->tail_idx].x;
     tail_y = snake->body[snake->tail_idx].y;
     mvaddch(tail_y, tail_x, ' ');
-    snake->tail_idx = (snake->tail_idx + 1) % MAX_LENGTH;
+    snake->tail_idx = (snake->tail_idx + 1) % (game->screen_w * game->screen_h);
   }
 
   // update board
