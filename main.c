@@ -208,7 +208,7 @@ void init_game(struct game *game) {
     snake->body[i].x = init_x + i;
     snake->body[i].y = init_y;
     board[init_y * width + init_x] = 's';
-    mvaddch(init_y, init_x - i, '#');
+    mvaddch(init_y, init_x + i, '#');
   }
 
   // populate game struct
