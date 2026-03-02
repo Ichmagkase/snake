@@ -34,7 +34,7 @@
 #define SPEED_SLOW 15
 #define SPEED_SUPER_SLOW 2
 
-#define ALLOWED_FLAGS "fsFSl:c:h"
+#define ALLOWED_FLAGS "fsFSl:c:w"
 
 /**
  * struct snake_segment - a snake segment stored in the struct snake body array
@@ -72,6 +72,7 @@ struct snake {
  * @clock: sleep time between frames
  */
 struct game {
+  bool wall_kills;
   int screen_w;
   int screen_h;
   int speed;
@@ -221,6 +222,7 @@ void init_game(struct game *game) {
   game->snake = snake;
   game->board = board;
   game->logfd = logfd;
+  game->wall_kills = false;
 
   clock_gettime(CLOCK_MONOTONIC, &game->tick);
 
@@ -362,6 +364,7 @@ bool update_state(struct game *game) {
 void apply_options(struct game *game, int argc, char *argv[]) {
   int opt;
   int custom_speed;
+  int custom_length;
   while ((opt = getopt(argc, argv, ALLOWED_FLAGS)) != -1) {
     switch (opt) {
     case 's':
@@ -389,10 +392,28 @@ void apply_options(struct game *game, int argc, char *argv[]) {
         fflush(stderr);
         exit(EXIT_FAILURE);
       }
-
       game->speed = custom_speed;
-      log_out(game->logfd, "Applied option: custom speed\n");
+      log_out(game->logfd, "Applied option: custom speed of %d\n",
+              custom_speed);
       return;
+    case 'w':
+      game->wall_kills = true;
+      log_out(game->logfd, "Applied option: walls kill\n");
+      return;
+    case 'l':
+      // TODO: fix bug where snake moves to top left when this option is applied
+      custom_length = atoi(optarg);
+      if (custom_length <= 1) {
+        cleanup_game(game);
+        endwin();
+        fprintf(stderr, "Length must be >= 1\n");
+        exit(EXIT_FAILURE);
+      }
+      game->snake->head_idx = custom_length;
+      log_out(game->logfd, "Applied option: custom length of %d\n",
+              custom_length);
+      return;
+
     default:
       log_out(game->logfd, "Usage: %s [ -%s ]\n", argv[0], ALLOWED_FLAGS);
       cleanup_game(game);
